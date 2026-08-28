@@ -56,7 +56,9 @@ def main():
         print("Set GROQ_API_KEY in .env (get a free key at https://console.groq.com)")
         sys.exit(1)
 
-    from agent import build_agent  # imported after key check so failure is clean
+    from agent import build_agent
+    from growth_agent import build_growth_agent
+    from supervisor import classify_intent
 
     print("=== AI Buyer Agent Demo ===")
     budget = float(os.environ.get("DEMO_BUDGET_RUPEES", "2000"))
@@ -68,7 +70,8 @@ def main():
     print(f"Audit trail: GET {SHOP_API}/audit-log?session_id={session_id}")
     print("Type 'quit' to exit.\n")
 
-    agent = build_agent()
+    shopping_agent = build_agent()
+    growth_agent = build_growth_agent()
     messages = [{"role": "user", "content": f"[SYSTEM CONTEXT] Your session_id for all orders is: {session_id}"}]
 
     while True:
@@ -82,14 +85,26 @@ def main():
         if not user_input.strip():
             continue
 
+
         messages.append({"role": "user", "content": user_input})
         start_idx = len(messages)
-        result = agent.invoke({"messages": messages})
+
+        route = classify_intent(messages)
+        active_agent = growth_agent if route == "growth" else shopping_agent
+        print(f"  [routed to: {route}]")
+
+        result = active_agent.invoke({"messages": messages})
         messages = result["messages"]
 
         print_trace(messages, start_idx)
         final = messages[-1]
-        print(f"Agent: {extract_text(final.content)}\n")
+        # print(f"[DEBUG raw content]: {repr(final.content)}\n")
+        # print(f"Agent: {extract_text(final.content)}\n")
+        text = extract_text(final.content)
+        if not text.strip():
+            text = "(No response text was returned for that turn - the action may have completed. Try asking for a status update.)"
+        print(f"Agent: {text}\n")
+
 
 
 if __name__ == "__main__":
