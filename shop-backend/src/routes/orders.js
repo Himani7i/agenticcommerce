@@ -19,12 +19,17 @@ function getProductsById(ids) {
 }
 
 // POST /orders
-// body: { session_id, items: [{product_id, qty}], idempotency_key? }
+// body: { session_id, items: [{product_id, qty}], idempotency_key?,
+//        discount_pct?, discount_reason?}
 router.post('/', async (req, res) => {
-  const { session_id, items, idempotency_key } = req.body;
+  const { session_id, items, idempotency_key, discount_pct = 0, discount_reason } = req.body;
 
   if (!session_id || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'session_id and non-empty items[] required' });
+  }
+
+  if (discount_pct>0 && !discount_reason){
+    return res.status(400).json({error: 'discount_reason is required whenever discount_pct > 0'});
   }
 
   // Idempotency: replaying the same key returns the existing order instead
@@ -43,9 +48,10 @@ router.post('/', async (req, res) => {
 
   const session = getSession(session_id);
   const productsById = getProductsById(items.map(i => i.product_id));
-  const totalAmount = items.reduce((sum, it) => sum + (productsById[it.product_id]?.price ?? 0) * it.qty, 0);
+  const subtotal = items.reduce((sum,it)=> sum+(productsById[it.product_id]?.price??0)*it.qty,0);
+  const totalAmount = Math.round(subtotal * (1 - discount_pct / 100));
 
-  const checks = runPolicyChecks({ session, items, productsById, totalAmount });
+  const checks = runPolicyChecks({ session, items, productsById, totalAmount, discountPct: discount_pct });
   const passed = allChecksPassed(checks);
 
   if (!passed) {
@@ -72,7 +78,9 @@ router.post('/', async (req, res) => {
     INSERT INTO orders (id, session_id, razorpay_order_id, status, amount, currency, items, idempotency_key, failure_reason, created_at, updated_at)
     VALUES (?, ?, NULL, ?, ?, 'INR', ?, ?, NULL, ?, ?)
   `).run(orderId, session_id, status, totalAmount, JSON.stringify(items), idempotency_key || null, now, now);
-
+  
+  const discountInfo = { discount_pct, discount_reason, subtotal };
+  
   if (mustConfirm) {
     logAudit({
       session_id, actor: session.actor_type, tool_called: 'create_order',
@@ -85,7 +93,7 @@ router.post('/', async (req, res) => {
     });
   }
 
-  await finalizeToRazorpay({ id: orderId, session_id, amount: totalAmount, currency: 'INR', items }, session, checks, res);
+  await finalizeToRazorpay({ id: orderId, session_id, amount: totalAmount, currency: 'INR', items }, session, checks, res, discountInfo);
 });
 
 // POST /orders/:id/confirm - human-in-the-loop approval for over-threshold orders
@@ -115,7 +123,7 @@ router.get('/:id', (req, res) => {
 
 // --- helpers ---
 
-async function finalizeToRazorpay(orderRow, session, checks, res) {
+async function finalizeToRazorpay(orderRow, session, checks, res, discountInfo = {}) {
   try {
     const rzpOrder = await createRazorpayOrder({
       amount: orderRow.amount,
@@ -140,10 +148,16 @@ async function finalizeToRazorpay(orderRow, session, checks, res) {
       });
       paymentLink = link.short_url;
     }
+    
+    
+    const discountNote = discountInfo.discount_pct > 0
+      ? ` (${discountInfo.discount_pct}% discount applied - reason: "${discountInfo.discount_reason}", subtotal was ₹${(discountInfo.subtotal/100).toFixed(2)})`
+      : '';
+
 
     logAudit({
       session_id: orderRow.session_id, actor: session.actor_type, tool_called: 'create_razorpay_order',
-      input: { order_id: orderRow.id, amount: orderRow.amount }, policy_checks: checks,
+      input: { order_id: orderRow.id, amount: orderRow.amount, ...discountInfo}, policy_checks: checks,
       result: { razorpay_order_id: rzpOrder.id, payment_link: paymentLink },
       decision: 'allowed',
       explanation: `Razorpay order ${rzpOrder.id} created for ₹${(orderRow.amount/100).toFixed(2)}${paymentLink ? ' - payment link generated' : ' - awaiting agent payment capture'}`
@@ -170,6 +184,7 @@ function buildSuggestion(failedCheck) {
   if (failedCheck.name === 'sku_agent_purchasable') return 'This product requires human checkout - it is not enabled for AI buyers.';
   if (failedCheck.name === 'category_allowlist') return 'Choose an item from an allowed category for this session.';
   if (failedCheck.name === 'valid_product_ids') return 'That product ID does not exist. Try searching the catalog again.';
+  if (failedCheck.name === 'discount_within_limit') return "Reduce the discount percentage to within the merchant's allowed limit.";
   return 'Adjust the order and try again.';
 }
 

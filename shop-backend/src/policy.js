@@ -1,9 +1,10 @@
+import { MAX_DISCOUNT_PCT } from './config.js';
 /**
  * Runs every guardrail check for a proposed order and returns a structured
  * list, so the audit log can show exactly which gate passed/failed and why.
  * Nothing here throws - the caller decides what to do with a failed check.
  */
-export function runPolicyChecks({ session, items, productsById, totalAmount }) {
+export function runPolicyChecks({ session, items, productsById, totalAmount, discountPct = 0 }) {
   const checks = [];
 
   checks.push({
@@ -68,6 +69,17 @@ export function runPolicyChecks({ session, items, productsById, totalAmount }) {
         ? `Product '${overPriced.product_id}' price exceeds its agent price cap`
         : 'All items within per-SKU agent price caps'
     });
+  
+  if (discountPct > 0) {
+      const withinLimit = discountPct <= MAX_DISCOUNT_PCT;
+      checks.push({
+        name: 'discount_within_limit',
+        passed: withinLimit,
+        reason: withinLimit
+          ? `Discount ${discountPct}% is within the merchant's ${MAX_DISCOUNT_PCT}% limit`
+          : `Discount ${discountPct}% exceeds the merchant's ${MAX_DISCOUNT_PCT}% limit`
+      });
+    }
   }
 
   const outOfStock = items.find(it => (productsById[it.product_id]?.stock ?? 0) < it.qty);
