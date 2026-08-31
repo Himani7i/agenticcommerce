@@ -59,6 +59,7 @@ def main():
     from agent import build_agent
     from growth_agent import build_growth_agent
     from supervisor import classify_intent
+    from utils import safe_reply_text
 
     print("=== AI Buyer Agent Demo ===")
     budget = float(os.environ.get("DEMO_BUDGET_RUPEES", "2000"))
@@ -100,10 +101,11 @@ def main():
         final = messages[-1]
         # print(f"[DEBUG raw content]: {repr(final.content)}\n")
         # print(f"Agent: {extract_text(final.content)}\n")
-        text = extract_text(final.content)
-        if not text.strip():
-            text = "(No response text was returned for that turn - the action may have completed. Try asking for a status update.)"
-        print(f"Agent: {text}\n")
+        # text = extract_text(final.content)
+        # if not text.strip():
+        #     text = "(No response text was returned for that turn - the action may have completed. Try asking for a status update.)"
+        # print(f"Agent: {text}\n")
+        print(f"Agent: {safe_reply_text(final.content)}\n")
 
 
 
